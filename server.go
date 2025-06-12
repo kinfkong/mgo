@@ -390,7 +390,7 @@ func (server *mongoServer) pinger(loop bool) {
 	}
 	op := queryOp{
 		collection: "admin.$cmd",
-		query:      bson.D{{Name: "ping", Value: 1}},
+		query:      bson.D{bson.DocElem{Name: "ping", Value: 1}},
 		flags:      flagSlaveOk,
 		limit:      -1,
 	}
