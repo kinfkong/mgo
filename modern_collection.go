@@ -95,14 +95,20 @@ func (c *ModernColl) EnsureIndex(index Index) error {
 		keys = append(keys, officialBson.E{Key: fieldName, Value: order})
 	}
 
+	indexOptions := &options.IndexOptions{
+		Unique:     &index.Unique,
+		Background: &index.Background,
+		Sparse:     &index.Sparse,
+	}
+
+	// Only set the name if explicitly provided, otherwise let MongoDB auto-generate it
+	if index.Name != "" {
+		indexOptions.Name = &index.Name
+	}
+
 	indexModel := mongodrv.IndexModel{
-		Keys: keys,
-		Options: &options.IndexOptions{
-			Name:       &index.Name,
-			Unique:     &index.Unique,
-			Background: &index.Background,
-			Sparse:     &index.Sparse,
-		},
+		Keys:    keys,
+		Options: indexOptions,
 	}
 
 	if index.ExpireAfter > 0 {
@@ -112,6 +118,11 @@ func (c *ModernColl) EnsureIndex(index Index) error {
 
 	_, err := c.mgoColl.Indexes().CreateOne(ctx, indexModel)
 	return err
+}
+
+// EnsureIndexKey ensures an index with the given key exists, creating it if necessary (mgo API compatible)
+func (c *ModernColl) EnsureIndexKey(key ...string) error {
+	return c.EnsureIndex(Index{Key: key})
 }
 
 // DropCollection drops the collection
