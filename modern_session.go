@@ -4,6 +4,8 @@ package mgo
 
 import (
 	"context"
+	"net/url"
+	"strings"
 	"time"
 
 	officialBson "go.mongodb.org/mongo-driver/bson"
@@ -13,17 +15,23 @@ import (
 )
 
 // DialModernMGO connects to MongoDB using the official driver but provides mgo API (mgo API compatible)
-func DialModernMGO(url string) (*ModernMGO, error) {
+func DialModernMGO(mongoURL string) (*ModernMGO, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongodrv.Connect(ctx, options.Client().ApplyURI(url))
+	client, err := mongodrv.Connect(ctx, options.Client().ApplyURI(mongoURL))
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse database name from URL - simple parsing for common cases
+	// Parse database name from URL
 	dbName := "test" // Default database name
+	if parsedURL, err := url.Parse(mongoURL); err == nil && parsedURL.Path != "" {
+		dbName = strings.TrimPrefix(parsedURL.Path, "/")
+		if dbName == "" {
+			dbName = "test"
+		}
+	}
 
 	return &ModernMGO{
 		client: client,
