@@ -5,745 +5,28 @@ package mgo
 
 import (
 	"context"
-	"reflect"
-	"strings"
+	"crypto/md5"
+	"errors"
+	"fmt"
+	"io"
 	"time"
 
 	"github.com/globalsign/mgo/bson"
-	officialBson "go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	mongodrv "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-// ModernMGO provides the mgo API using the official MongoDB driver
-type ModernMGO struct {
-	client     *mongodrv.Client
-	dbName     string
-	mode       Mode
-	safe       *Safe
-	isOriginal bool // Track if this is the original session or a copy
-}
+// Session operations moved to modern_session.go
+// Database operations moved to modern_session.go
+// Collection operations moved to modern_collection.go
 
-// ModernDB wraps the modern database
-type ModernDB struct {
-	mgoDB *mongodrv.Database
-	name  string
-}
+// Query operations moved to modern_query.go
 
-// ModernColl wraps the modern collection
-type ModernColl struct {
-	mgoColl *mongodrv.Collection
-	name    string
-}
+// Iterator operations moved to modern_iterator.go
 
-// ModernQ wraps query state
-type ModernQ struct {
-	coll       *ModernColl
-	filter     interface{}
-	sort       interface{}
-	skip       int64
-	limit      int64
-	projection interface{}
-}
+// Aggregation operations moved to modern_aggregation.go
 
-// ModernIt wraps cursor iteration
-type ModernIt struct {
-	cursor *mongodrv.Cursor
-	ctx    context.Context
-	err    error
-}
-
-// ModernPipe wraps aggregation pipeline state
-type ModernPipe struct {
-	collection *ModernColl
-	pipeline   interface{}
-	allowDisk  bool
-	batchSize  int32
-	maxTimeMS  int64
-	collation  *options.Collation
-}
-
-// ModernBulk provides bulk operations using the official MongoDB driver
-type ModernBulk struct {
-	collection *ModernColl
-	operations []mongodrv.WriteModel
-	ordered    bool
-	opcount    int
-}
-
-// DialModernMGO connects to MongoDB using the official driver but provides mgo API (mgo API compatible)
-func DialModernMGO(url string) (*ModernMGO, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	client, err := mongodrv.Connect(ctx, options.Client().ApplyURI(url))
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse database name from URL - simple parsing for common cases
-	dbName := "test" // Default database name
-
-	return &ModernMGO{
-		client: client,
-		dbName: dbName,
-		mode:   Primary,
-		safe: &Safe{
-			W:        1,
-			WTimeout: 0,
-			FSync:    false,
-			J:        false,
-		},
-		isOriginal: true, // Mark as original session
-	}, nil
-}
-
-// Close closes the modern MGO session
-func (m *ModernMGO) Close() {
-	// Only close the client if this is the original session
-	if m.isOriginal && m.client != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		m.client.Disconnect(ctx)
-	}
-}
-
-// DB returns a database handle
-func (m *ModernMGO) DB(name string) *ModernDB {
-	if name == "" {
-		name = m.dbName
-	}
-	return &ModernDB{
-		mgoDB: m.client.Database(name),
-		name:  name,
-	}
-}
-
-// Ping tests the connection
-func (m *ModernMGO) Ping() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return m.client.Ping(ctx, readpref.Primary())
-}
-
-// BuildInfo gets server build information (mgo API compatible)
-func (m *ModernMGO) BuildInfo() (BuildInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	db := m.client.Database("admin")
-
-	var result struct {
-		Version        string `bson:"version"`
-		GitVersion     string `bson:"gitVersion"`
-		SysInfo        string `bson:"sysInfo"`
-		Bits           int    `bson:"bits"`
-		Debug          bool   `bson:"debug"`
-		MaxObjectSize  int    `bson:"maxBsonObjectSize"`
-		VersionArray   []int  `bson:"versionArray"`
-		OpenSSLVersion string `bson:"OpenSSLVersion"`
-	}
-
-	err := db.RunCommand(ctx, officialBson.D{{Key: "buildInfo", Value: 1}}).Decode(&result)
-	if err != nil {
-		return BuildInfo{}, err
-	}
-
-	return BuildInfo{
-		Version:        result.Version,
-		GitVersion:     result.GitVersion,
-		SysInfo:        result.SysInfo,
-		Bits:           result.Bits,
-		Debug:          result.Debug,
-		MaxObjectSize:  result.MaxObjectSize,
-		VersionArray:   result.VersionArray,
-		OpenSSLVersion: result.OpenSSLVersion,
-	}, nil
-}
-
-// C returns a collection handle
-func (db *ModernDB) C(name string) *ModernColl {
-	return &ModernColl{
-		mgoColl: db.mgoDB.Collection(name),
-		name:    name,
-	}
-}
-
-// Insert inserts documents (mgo API compatible)
-func (c *ModernColl) Insert(docs ...interface{}) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	convertedDocs := make([]interface{}, len(docs))
-	for i, doc := range docs {
-		convertedDocs[i] = convertMGOToOfficial(doc)
-	}
-
-	if len(convertedDocs) == 1 {
-		_, err := c.mgoColl.InsertOne(ctx, convertedDocs[0])
-		return err
-	}
-	_, err := c.mgoColl.InsertMany(ctx, convertedDocs)
-	return err
-}
-
-// Find creates a query (mgo API compatible)
-func (c *ModernColl) Find(query interface{}) *ModernQ {
-	var filter interface{}
-	if query == nil {
-		filter = officialBson.D{} // Empty document for "find all"
-	} else {
-		filter = convertMGOToOfficial(query)
-	}
-
-	return &ModernQ{
-		coll:   c,
-		filter: filter,
-		skip:   0,
-		limit:  0,
-	}
-}
-
-// Count counts documents
-func (c *ModernColl) Count() (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	count, err := c.mgoColl.CountDocuments(ctx, officialBson.D{})
-	return int(count), err
-}
-
-// Remove removes a document
-func (c *ModernColl) Remove(selector interface{}) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	filter := convertMGOToOfficial(selector)
-	_, err := c.mgoColl.DeleteOne(ctx, filter)
-	return err
-}
-
-// Update updates a document
-func (c *ModernColl) Update(selector, update interface{}) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	filter := convertMGOToOfficial(selector)
-	updateDoc := convertMGOToOfficial(update)
-
-	_, err := c.mgoColl.UpdateOne(ctx, filter, updateDoc)
-	return err
-}
-
-// EnsureIndex creates an index (mgo API compatible)
-func (c *ModernColl) EnsureIndex(index Index) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	keys := officialBson.D{}
-	for _, key := range index.Key {
-		order := 1
-		fieldName := key
-		if strings.HasPrefix(key, "-") {
-			order = -1
-			fieldName = key[1:]
-		}
-		keys = append(keys, officialBson.E{Key: fieldName, Value: order})
-	}
-
-	indexModel := mongodrv.IndexModel{
-		Keys: keys,
-		Options: &options.IndexOptions{
-			Name:       &index.Name,
-			Unique:     &index.Unique,
-			Background: &index.Background,
-			Sparse:     &index.Sparse,
-		},
-	}
-
-	if index.ExpireAfter > 0 {
-		expireAfterSeconds := int32(index.ExpireAfter.Seconds())
-		indexModel.Options.ExpireAfterSeconds = &expireAfterSeconds
-	}
-
-	_, err := c.mgoColl.Indexes().CreateOne(ctx, indexModel)
-	return err
-}
-
-// DropCollection drops the collection
-func (c *ModernColl) DropCollection() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	return c.mgoColl.Drop(ctx)
-}
-
-// Pipe creates an aggregation pipeline (mgo API compatible)
-func (c *ModernColl) Pipe(pipeline interface{}) *ModernPipe {
-	return &ModernPipe{
-		collection: c,
-		pipeline:   pipeline,
-		allowDisk:  false,
-		batchSize:  101, // Default batch size
-		maxTimeMS:  0,
-		collation:  nil,
-	}
-}
-
-// One finds one document (mgo API compatible)
-func (q *ModernQ) One(result interface{}) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	findOpts := &options.FindOneOptions{}
-	if q.projection != nil {
-		findOpts.Projection = q.projection
-	}
-	if q.sort != nil {
-		findOpts.Sort = q.sort
-	}
-	if q.skip > 0 {
-		findOpts.Skip = &q.skip
-	}
-
-	singleResult := q.coll.mgoColl.FindOne(ctx, q.filter, findOpts)
-	if singleResult.Err() != nil {
-		if singleResult.Err() == mongodrv.ErrNoDocuments {
-			return ErrNotFound
-		}
-		return singleResult.Err()
-	}
-
-	var doc officialBson.M
-	err := singleResult.Decode(&doc)
-	if err != nil {
-		return err
-	}
-
-	converted := convertOfficialToMGO(doc)
-	return mapStructToInterface(converted, result)
-}
-
-// All finds all documents
-func (q *ModernQ) All(result interface{}) error {
-	iter := q.Iter()
-	defer iter.Close()
-	return iter.All(result)
-}
-
-// Count counts query results
-func (q *ModernQ) Count() (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	opts := &options.CountOptions{}
-	if q.skip > 0 {
-		opts.Skip = &q.skip
-	}
-	if q.limit > 0 {
-		opts.Limit = &q.limit
-	}
-
-	count, err := q.coll.mgoColl.CountDocuments(ctx, q.filter, opts)
-	return int(count), err
-}
-
-// Iter returns an iterator
-func (q *ModernQ) Iter() *ModernIt {
-	ctx := context.Background()
-
-	findOpts := &options.FindOptions{}
-	if q.projection != nil {
-		findOpts.Projection = q.projection
-	}
-	if q.sort != nil {
-		findOpts.Sort = q.sort
-	}
-	if q.skip > 0 {
-		findOpts.Skip = &q.skip
-	}
-	if q.limit > 0 {
-		findOpts.Limit = &q.limit
-	}
-
-	cursor, err := q.coll.mgoColl.Find(ctx, q.filter, findOpts)
-
-	return &ModernIt{
-		cursor: cursor,
-		ctx:    ctx,
-		err:    err,
-	}
-}
-
-// Sort sets sort order
-func (q *ModernQ) Sort(fields ...string) *ModernQ {
-	sort := officialBson.D{}
-	for _, field := range fields {
-		order := 1
-		if strings.HasPrefix(field, "-") {
-			order = -1
-			field = field[1:]
-		}
-		sort = append(sort, officialBson.E{Key: field, Value: order})
-	}
-	q.sort = sort
-	return q
-}
-
-// Limit sets query limit
-func (q *ModernQ) Limit(n int) *ModernQ {
-	q.limit = int64(n)
-	return q
-}
-
-// Skip sets query skip
-func (q *ModernQ) Skip(n int) *ModernQ {
-	q.skip = int64(n)
-	return q
-}
-
-// Select sets the fields to select (mgo API compatible)
-func (q *ModernQ) Select(selector interface{}) *ModernQ {
-	q.projection = convertMGOToOfficial(selector)
-	return q
-}
-
-// Apply applies a change to a single document and returns the old or new document (mgo API compatible)
-func (q *ModernQ) Apply(change Change, result interface{}) (*ChangeInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var updateDoc interface{}
-
-	if change.Remove {
-		// For remove operations, use FindOneAndDelete
-		deleteOpts := options.FindOneAndDelete()
-
-		singleResult := q.coll.mgoColl.FindOneAndDelete(ctx, q.filter, deleteOpts)
-		if singleResult.Err() != nil {
-			if singleResult.Err() == mongodrv.ErrNoDocuments {
-				return &ChangeInfo{}, ErrNotFound
-			}
-			return nil, singleResult.Err()
-		}
-
-		if result != nil {
-			var doc officialBson.M
-			err := singleResult.Decode(&doc)
-			if err != nil {
-				return nil, err
-			}
-			converted := convertOfficialToMGO(doc)
-			err = mapStructToInterface(converted, result)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		return &ChangeInfo{Removed: 1}, nil
-	}
-
-	// For update/upsert operations
-	updateDoc = convertMGOToOfficial(change.Update)
-	updateOpts := options.FindOneAndUpdate()
-	updateOpts.SetUpsert(change.Upsert)
-
-	if change.ReturnNew {
-		updateOpts.SetReturnDocument(options.After)
-	} else {
-		updateOpts.SetReturnDocument(options.Before)
-	}
-
-	singleResult := q.coll.mgoColl.FindOneAndUpdate(ctx, q.filter, updateDoc, updateOpts)
-	if singleResult.Err() != nil {
-		if singleResult.Err() == mongodrv.ErrNoDocuments {
-			if change.Upsert {
-				// Document was upserted but we need to return ChangeInfo
-				return &ChangeInfo{Updated: 1}, nil
-			}
-			return &ChangeInfo{}, ErrNotFound
-		}
-		return nil, singleResult.Err()
-	}
-
-	if result != nil {
-		var doc officialBson.M
-		err := singleResult.Decode(&doc)
-		if err != nil {
-			return nil, err
-		}
-		converted := convertOfficialToMGO(doc)
-		err = mapStructToInterface(converted, result)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return &ChangeInfo{Updated: 1}, nil
-}
-
-// Next gets next document from iterator
-func (it *ModernIt) Next(result interface{}) bool {
-	if it.err != nil {
-		return false
-	}
-
-	if it.cursor == nil {
-		it.err = ErrNotFound
-		return false
-	}
-
-	if !it.cursor.Next(it.ctx) {
-		// Check if there was an actual error, or just end of cursor
-		it.err = it.cursor.Err()
-		// Don't set ErrNotFound here - end of iteration is normal
-		return false
-	}
-
-	var doc officialBson.M
-	err := it.cursor.Decode(&doc)
-	if err != nil {
-		it.err = err
-		return false
-	}
-
-	converted := convertOfficialToMGO(doc)
-	it.err = mapStructToInterface(converted, result)
-	return it.err == nil
-}
-
-// Close closes the iterator
-func (it *ModernIt) Close() error {
-	if it.cursor != nil {
-		err := it.cursor.Close(it.ctx)
-		if err != nil && it.err == nil {
-			it.err = err
-		}
-	}
-	return it.err
-}
-
-// All gets all documents from iterator
-func (it *ModernIt) All(result interface{}) error {
-	if it.err != nil {
-		return it.err
-	}
-
-	if it.cursor == nil {
-		return ErrNotFound
-	}
-
-	// Use Next() in a loop to avoid BSON slice unmarshalling issues
-	var docs []interface{}
-
-	for {
-		var doc bson.M
-		if !it.Next(&doc) {
-			break
-		}
-		if it.err != nil {
-			return it.err
-		}
-		docs = append(docs, doc)
-	}
-
-	// Check for iteration errors (not end-of-cursor)
-	if it.err != nil && it.err != ErrNotFound {
-		return it.err
-	}
-
-	// Reset error since reaching end of cursor is expected
-	it.err = nil
-
-	return mapStructToInterface(docs, result)
-}
-
-// Modern implementations of Pipe methods
-
-// Iter executes the aggregation pipeline and returns an iterator
-func (p *ModernPipe) Iter() *ModernIt {
-	ctx := context.Background()
-
-	// Convert pipeline to the correct format for the official driver
-	var pipeline interface{}
-
-	// Handle different pipeline input types
-	switch v := p.pipeline.(type) {
-	case []interface{}:
-		// Already converted, use as-is
-		pipeline = v
-	case []bson.M:
-		// Convert []bson.M to []interface{}
-		converted := make([]interface{}, len(v))
-		for i, stage := range v {
-			converted[i] = convertMGOToOfficial(stage)
-		}
-		pipeline = converted
-	case []officialBson.M:
-		// Already in official format
-		pipeline = v
-	default:
-		// Try to convert single stage
-		pipeline = []interface{}{convertMGOToOfficial(v)}
-	}
-
-	// Create aggregation options
-	opts := &options.AggregateOptions{}
-	if p.allowDisk {
-		opts.AllowDiskUse = &p.allowDisk
-	}
-	if p.batchSize > 0 {
-		opts.BatchSize = &p.batchSize
-	}
-	if p.maxTimeMS > 0 {
-		maxTime := time.Duration(p.maxTimeMS) * time.Millisecond
-		opts.MaxTime = &maxTime
-	}
-	if p.collation != nil {
-		opts.Collation = p.collation
-	}
-
-	cursor, err := p.collection.mgoColl.Aggregate(ctx, pipeline, opts)
-
-	return &ModernIt{
-		cursor: cursor,
-		ctx:    ctx,
-		err:    err,
-	}
-}
-
-// All executes the pipeline and returns all results
-func (p *ModernPipe) All(result interface{}) error {
-	iter := p.Iter()
-	defer iter.Close()
-	return iter.All(result)
-}
-
-// One executes the pipeline and returns the first result
-func (p *ModernPipe) One(result interface{}) error {
-	iter := p.Iter()
-	defer iter.Close()
-
-	if iter.Next(result) {
-		return nil
-	}
-	if err := iter.err; err != nil {
-		return err
-	}
-	return ErrNotFound
-}
-
-// Explain returns aggregation execution statistics
-func (p *ModernPipe) Explain(result interface{}) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Convert pipeline to the correct format
-	var pipeline []interface{}
-
-	switch v := p.pipeline.(type) {
-	case []interface{}:
-		pipeline = v
-	case []bson.M:
-		pipeline = make([]interface{}, len(v))
-		for i, stage := range v {
-			pipeline[i] = convertMGOToOfficial(stage)
-		}
-	case []officialBson.M:
-		pipeline = make([]interface{}, len(v))
-		for i, stage := range v {
-			pipeline[i] = stage
-		}
-	default:
-		pipeline = []interface{}{convertMGOToOfficial(v)}
-	}
-
-	// Create explain command
-	explainCmd := officialBson.D{
-		{Key: "aggregate", Value: p.collection.name},
-		{Key: "pipeline", Value: pipeline},
-		{Key: "explain", Value: true},
-	}
-
-	db := p.collection.mgoColl.Database()
-	singleResult := db.RunCommand(ctx, explainCmd)
-
-	var doc officialBson.M
-	err := singleResult.Decode(&doc)
-	if err != nil {
-		return err
-	}
-
-	converted := convertOfficialToMGO(doc)
-	return mapStructToInterface(converted, result)
-}
-
-// AllowDiskUse enables writing to temporary files during aggregation
-func (p *ModernPipe) AllowDiskUse() *ModernPipe {
-	p.allowDisk = true
-	return p
-}
-
-// Batch sets the batch size for the aggregation cursor
-func (p *ModernPipe) Batch(n int) *ModernPipe {
-	p.batchSize = int32(n)
-	return p
-}
-
-// SetMaxTime sets the maximum execution time for the aggregation
-func (p *ModernPipe) SetMaxTime(d time.Duration) *ModernPipe {
-	p.maxTimeMS = int64(d / time.Millisecond)
-	return p
-}
-
-// Collation sets the collation for the aggregation
-func (p *ModernPipe) Collation(collation *Collation) *ModernPipe {
-	if collation != nil {
-		// Convert mgo Collation to official driver Collation
-		p.collation = &options.Collation{
-			Locale:          collation.Locale,
-			CaseFirst:       collation.CaseFirst,
-			Strength:        collation.Strength,
-			Alternate:       collation.Alternate,
-			MaxVariable:     collation.MaxVariable,
-			Normalization:   collation.Normalization,
-			CaseLevel:       collation.CaseLevel,
-			NumericOrdering: collation.NumericOrdering,
-			Backwards:       collation.Backwards,
-		}
-	}
-	return p
-}
-
-// Run executes a database command on the collection's database (mgo API compatible)
-func (c *ModernColl) Run(cmd, result interface{}) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	command := convertMGOToOfficial(cmd)
-	singleResult := c.mgoColl.Database().RunCommand(ctx, command)
-
-	var doc officialBson.M
-	err := singleResult.Decode(&doc)
-	if err != nil {
-		return err
-	}
-
-	converted := convertOfficialToMGO(doc)
-	return mapStructToInterface(converted, result)
-}
-
-// Bulk returns a bulk operation builder (mgo API compatible)
-func (c *ModernColl) Bulk() *ModernBulk {
-	return &ModernBulk{
-		collection: c,
-		operations: make([]mongodrv.WriteModel, 0),
-		ordered:    true,
-		opcount:    0,
-	}
-}
+// Run and Bulk operations moved to modern_collection.go
 
 // Unordered puts the bulk operation in unordered mode (mgo API compatible)
 func (b *ModernBulk) Unordered() {
@@ -948,233 +231,445 @@ func (b *ModernBulk) convertBulkError(result *mongodrv.BulkWriteResult, bulkErr 
 	}
 }
 
-// Conversion helpers
-func convertMGOToOfficial(input interface{}) interface{} {
-	if input == nil {
-		return nil
-	}
+// GridFS Operations Implementation
 
-	switch v := input.(type) {
-	case bson.M:
-		result := officialBson.M{}
-		for key, value := range v {
-			result[key] = convertMGOToOfficial(value)
-		}
-		return result
-	case bson.D:
-		result := officialBson.D{}
-		for _, elem := range v {
-			result = append(result, officialBson.E{
-				Key:   elem.Name,
-				Value: convertMGOToOfficial(elem.Value),
-			})
-		}
-		return result
-	case []interface{}:
-		result := make([]interface{}, len(v))
-		for i, item := range v {
-			result[i] = convertMGOToOfficial(item)
-		}
-		return result
-	case bson.ObjectId:
-		if len(v) == 12 {
-			objID := primitive.ObjectID{}
-			copy(objID[:], []byte(v))
-			return objID
-		}
-		return v
-	default:
-		return v
-	}
-}
-
-func convertOfficialToMGO(input interface{}) interface{} {
-	if input == nil {
-		return nil
-	}
-
-	switch v := input.(type) {
-	case officialBson.M:
-		result := bson.M{}
-		for key, value := range v {
-			result[key] = convertOfficialToMGO(value)
-		}
-		return result
-	case officialBson.D:
-		result := bson.D{}
-		for _, elem := range v {
-			result = append(result, bson.DocElem{
-				Name:  elem.Key,
-				Value: convertOfficialToMGO(elem.Value),
-			})
-		}
-		return result
-	case []interface{}:
-		result := make([]interface{}, len(v))
-		for i, item := range v {
-			result[i] = convertOfficialToMGO(item)
-		}
-		return result
-	case primitive.ObjectID:
-		return bson.ObjectId(v[:])
-	default:
-		return v
-	}
-}
-
-// convertSliceWithReflect converts a slice of interfaces to a target slice type using reflection
-func convertSliceWithReflect(srcSlice []interface{}, dst interface{}) error {
-	dstValue := reflect.ValueOf(dst)
-	if dstValue.Kind() != reflect.Ptr {
-		return ErrNotFound
-	}
-
-	dstSlice := dstValue.Elem()
-	if dstSlice.Kind() != reflect.Slice {
-		return ErrNotFound
-	}
-
-	elementType := dstSlice.Type().Elem()
-	newSlice := reflect.MakeSlice(dstSlice.Type(), 0, len(srcSlice))
-
-	for _, item := range srcSlice {
-		// Convert each item to the target element type
-		newElement := reflect.New(elementType).Interface()
-		err := mapStructToInterface(item, newElement)
-		if err != nil {
-			return err
-		}
-		newSlice = reflect.Append(newSlice, reflect.ValueOf(newElement).Elem())
-	}
-
-	dstSlice.Set(newSlice)
-	return nil
-}
-
-func mapStructToInterface(src, dst interface{}) error {
-	if src == nil {
-		return ErrNotFound
-	}
-
-	// Handle slice conversion specifically
-	if srcSlice, ok := src.([]interface{}); ok {
-		// Use reflection to handle slice conversion properly
-		return convertSliceWithReflect(srcSlice, dst)
-	}
-
-	// Handle single document conversion
-	data, err := bson.Marshal(src)
-	if err != nil {
-		return err
-	}
-	return bson.Unmarshal(data, dst)
-}
-
-// Copy creates a copy of the session (mgo API compatible)
-func (m *ModernMGO) Copy() *ModernMGO {
-	return &ModernMGO{
-		client:     m.client, // Reuse the same client connection
-		dbName:     m.dbName,
-		mode:       m.mode,
-		safe:       m.safe,
-		isOriginal: false, // Mark as copy
-	}
-}
-
-// Clone creates a clone of the session (mgo API compatible)
-func (m *ModernMGO) Clone() *ModernMGO {
-	return m.Copy() // In our implementation, Clone behaves like Copy
-}
-
-// SetMode sets the session mode for read preference (mgo API compatible)
-func (m *ModernMGO) SetMode(mode Mode, refresh bool) {
-	m.mode = mode
-	// Note: refresh parameter is for mgo compatibility but not used in modern driver
-}
-
-// Mode returns the current session mode
-func (m *ModernMGO) Mode() Mode {
-	return m.mode
-}
-
-// getReadPreference converts mgo Mode to official driver ReadPreference
-func (m *ModernMGO) getReadPreference() *readpref.ReadPref {
-	switch m.mode {
-	case Primary:
-		return readpref.Primary()
-	case PrimaryPreferred:
-		return readpref.PrimaryPreferred()
-	case Secondary:
-		return readpref.Secondary()
-	case SecondaryPreferred:
-		return readpref.SecondaryPreferred()
-	case Nearest:
-		return readpref.Nearest()
-	default:
-		return readpref.Primary()
-	}
-}
-
-// FindId finds a document by its ID (mgo API compatible)
-func (c *ModernColl) FindId(id interface{}) *ModernQ {
-	filter := convertMGOToOfficial(bson.M{"_id": id})
-	return &ModernQ{
-		coll:   c,
-		filter: filter,
-		skip:   0,
-		limit:  0,
-	}
-}
-
-// UpdateId updates a document by its ID (mgo API compatible)
-func (c *ModernColl) UpdateId(id, update interface{}) error {
-	return c.Update(bson.M{"_id": id}, update)
-}
-
-// RemoveId removes a document by its ID (mgo API compatible)
-func (c *ModernColl) RemoveId(id interface{}) error {
-	return c.Remove(bson.M{"_id": id})
-}
-
-// RemoveAll removes all documents matching the selector (mgo API compatible)
-func (c *ModernColl) RemoveAll(selector interface{}) (*ChangeInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	filter := convertMGOToOfficial(selector)
-	result, err := c.mgoColl.DeleteMany(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ChangeInfo{
-		Removed: int(result.DeletedCount),
-		Matched: int(result.DeletedCount),
+// Create creates a new GridFS file for writing (mgo API compatible)
+func (gfs *ModernGridFS) Create(filename string) (*ModernGridFile, error) {
+	return &ModernGridFile{
+		id:          bson.NewObjectId(),
+		filename:    filename,
+		contentType: "",
+		chunkSize:   255 * 1024, // Default chunk size
+		length:      0,
+		uploadDate:  time.Now(),
+		gfs:         gfs,
+		chunks:      make([][]byte, 0),
+		closed:      false,
 	}, nil
 }
 
-// Upsert updates a document or inserts it if it doesn't exist (mgo API compatible)
-func (c *ModernColl) Upsert(selector, update interface{}) (*ChangeInfo, error) {
+// Open opens the most recent GridFS file with the given filename for reading (mgo API compatible)
+func (gfs *ModernGridFS) Open(filename string) (*ModernGridFile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	filter := convertMGOToOfficial(selector)
-	updateDoc := convertMGOToOfficial(update)
+	// Find the most recent file with this filename
+	filter := bson.M{"filename": filename}
+	opts := options.FindOne().SetSort(bson.M{"uploadDate": -1})
 
-	opts := options.Update().SetUpsert(true)
-	result, err := c.mgoColl.UpdateOne(ctx, filter, updateDoc, opts)
+	var fileDoc bson.M
+	err := gfs.Files.mgoColl.FindOne(ctx, convertMGOToOfficial(filter), opts).Decode(&fileDoc)
 	if err != nil {
+		if err == mongodrv.ErrNoDocuments {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 
-	changeInfo := &ChangeInfo{
-		Updated: int(result.ModifiedCount),
-		Matched: int(result.MatchedCount),
+	// Convert the document to a ModernGridFile
+	file := &ModernGridFile{
+		gfs:    gfs,
+		closed: false,
 	}
 
-	if result.UpsertedID != nil {
-		changeInfo.UpsertedId = convertOfficialToMGO(result.UpsertedID)
+	if id, ok := fileDoc["_id"]; ok {
+		file.id = id
+	}
+	if fn, ok := fileDoc["filename"].(string); ok {
+		file.filename = fn
+	}
+	if ct, ok := fileDoc["contentType"].(string); ok {
+		file.contentType = ct
+	}
+	if cs, ok := fileDoc["chunkSize"].(int32); ok {
+		file.chunkSize = int(cs)
+	} else if cs, ok := fileDoc["chunkSize"].(int); ok {
+		file.chunkSize = cs
+	}
+	if length, ok := fileDoc["length"].(int64); ok {
+		file.length = length
+	} else if length, ok := fileDoc["length"].(int32); ok {
+		file.length = int64(length)
+	}
+	if md5, ok := fileDoc["md5"].(string); ok {
+		file.md5 = md5
+	}
+	if ud, ok := fileDoc["uploadDate"].(time.Time); ok {
+		file.uploadDate = ud
+	}
+	if metadata, ok := fileDoc["metadata"]; ok {
+		file.metadata = metadata
 	}
 
-	return changeInfo, nil
+	return file, nil
 }
+
+// OpenId opens a GridFS file by its ID for reading (mgo API compatible)
+func (gfs *ModernGridFS) OpenId(id interface{}) (*ModernGridFile, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	filter := bson.M{"_id": id}
+	var fileDoc bson.M
+	err := gfs.Files.mgoColl.FindOne(ctx, convertMGOToOfficial(filter)).Decode(&fileDoc)
+	if err != nil {
+		if err == mongodrv.ErrNoDocuments {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	// Convert the document to a ModernGridFile
+	file := &ModernGridFile{
+		gfs:    gfs,
+		closed: false,
+	}
+
+	if id, ok := fileDoc["_id"]; ok {
+		file.id = id
+	}
+	if fn, ok := fileDoc["filename"].(string); ok {
+		file.filename = fn
+	}
+	if ct, ok := fileDoc["contentType"].(string); ok {
+		file.contentType = ct
+	}
+	if cs, ok := fileDoc["chunkSize"].(int32); ok {
+		file.chunkSize = int(cs)
+	} else if cs, ok := fileDoc["chunkSize"].(int); ok {
+		file.chunkSize = cs
+	}
+	if length, ok := fileDoc["length"].(int64); ok {
+		file.length = length
+	} else if length, ok := fileDoc["length"].(int32); ok {
+		file.length = int64(length)
+	}
+	if md5, ok := fileDoc["md5"].(string); ok {
+		file.md5 = md5
+	}
+	if ud, ok := fileDoc["uploadDate"].(time.Time); ok {
+		file.uploadDate = ud
+	}
+	if metadata, ok := fileDoc["metadata"]; ok {
+		file.metadata = metadata
+	}
+
+	return file, nil
+}
+
+// Remove removes all GridFS files with the given filename (mgo API compatible)
+func (gfs *ModernGridFS) Remove(filename string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Find all files with this filename to get their IDs
+	filter := bson.M{"filename": filename}
+	cursor, err := gfs.Files.mgoColl.Find(ctx, convertMGOToOfficial(filter))
+	if err != nil {
+		return err
+	}
+	defer cursor.Close(ctx)
+
+	var fileIds []interface{}
+	for cursor.Next(ctx) {
+		var doc bson.M
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+		if id, ok := doc["_id"]; ok {
+			fileIds = append(fileIds, id)
+		}
+	}
+
+	// Remove the files and chunks
+	for _, id := range fileIds {
+		if err := gfs.RemoveId(id); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// RemoveId removes a GridFS file by its ID (mgo API compatible)
+func (gfs *ModernGridFS) RemoveId(id interface{}) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Remove the file document
+	fileFilter := bson.M{"_id": id}
+	_, err := gfs.Files.mgoColl.DeleteOne(ctx, convertMGOToOfficial(fileFilter))
+	if err != nil {
+		return err
+	}
+
+	// Remove the chunks
+	chunkFilter := bson.M{"files_id": id}
+	_, err = gfs.Chunks.mgoColl.DeleteMany(ctx, convertMGOToOfficial(chunkFilter))
+	return err
+}
+
+// Find returns a query for finding GridFS files (mgo API compatible)
+func (gfs *ModernGridFS) Find(selector interface{}) *ModernQ {
+	return gfs.Files.Find(selector)
+}
+
+// OpenNext opens the next file from an iterator (mgo API compatible)
+func (gfs *ModernGridFS) OpenNext(iter *ModernIt, file **ModernGridFile) bool {
+	if *file != nil {
+		(*file).Close()
+	}
+
+	var fileDoc bson.M
+	if !iter.Next(&fileDoc) {
+		*file = nil
+		return false
+	}
+
+	// Convert document to ModernGridFile
+	f := &ModernGridFile{
+		gfs:    gfs,
+		closed: false,
+	}
+
+	if id, ok := fileDoc["_id"]; ok {
+		f.id = id
+	}
+	if fn, ok := fileDoc["filename"].(string); ok {
+		f.filename = fn
+	}
+	if ct, ok := fileDoc["contentType"].(string); ok {
+		f.contentType = ct
+	}
+	if cs, ok := fileDoc["chunkSize"].(int32); ok {
+		f.chunkSize = int(cs)
+	} else if cs, ok := fileDoc["chunkSize"].(int); ok {
+		f.chunkSize = cs
+	}
+	if length, ok := fileDoc["length"].(int64); ok {
+		f.length = length
+	} else if length, ok := fileDoc["length"].(int32); ok {
+		f.length = int64(length)
+	}
+	if md5, ok := fileDoc["md5"].(string); ok {
+		f.md5 = md5
+	}
+	if ud, ok := fileDoc["uploadDate"].(time.Time); ok {
+		f.uploadDate = ud
+	}
+	if metadata, ok := fileDoc["metadata"]; ok {
+		f.metadata = metadata
+	}
+
+	*file = f
+	return true
+}
+
+// GridFile Operations Implementation
+
+// Write writes data to the GridFS file (mgo API compatible)
+func (f *ModernGridFile) Write(data []byte) (int, error) {
+	if f.closed {
+		return 0, errors.New("file is closed")
+	}
+
+	f.chunks = append(f.chunks, data)
+	f.length += int64(len(data))
+	return len(data), nil
+}
+
+// Read reads data from the GridFS file (mgo API compatible)
+func (f *ModernGridFile) Read(data []byte) (int, error) {
+	if f.closed {
+		return 0, errors.New("file is closed")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Load chunks if not loaded
+	if f.chunks == nil {
+		filter := bson.M{"files_id": f.id}
+		opts := options.Find().SetSort(bson.M{"n": 1})
+
+		cursor, err := f.gfs.Chunks.mgoColl.Find(ctx, convertMGOToOfficial(filter), opts)
+		if err != nil {
+			return 0, err
+		}
+		defer cursor.Close(ctx)
+
+		f.chunks = make([][]byte, 0)
+		for cursor.Next(ctx) {
+			var chunkDoc bson.M
+			if err := cursor.Decode(&chunkDoc); err != nil {
+				continue
+			}
+			if chunkData, ok := chunkDoc["data"].([]byte); ok {
+				f.chunks = append(f.chunks, chunkData)
+			}
+		}
+	}
+
+	// Read from chunks
+	totalRead := 0
+	for _, chunk := range f.chunks {
+		if totalRead >= len(data) {
+			break
+		}
+		n := copy(data[totalRead:], chunk)
+		totalRead += n
+		if n < len(chunk) {
+			break
+		}
+	}
+
+	if totalRead == 0 {
+		return 0, io.EOF
+	}
+
+	return totalRead, nil
+}
+
+// Close closes the GridFS file (mgo API compatible)
+func (f *ModernGridFile) Close() error {
+	if f.closed {
+		return nil
+	}
+
+	// If this is a write operation, save the file
+	if len(f.chunks) > 0 {
+		if err := f.saveFile(); err != nil {
+			return err
+		}
+	}
+
+	f.closed = true
+	return nil
+}
+
+// saveFile saves the GridFS file and its chunks to MongoDB
+func (f *ModernGridFile) saveFile() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Calculate MD5 hash
+	hasher := md5.New()
+	for _, chunk := range f.chunks {
+		hasher.Write(chunk)
+	}
+	f.md5 = fmt.Sprintf("%x", hasher.Sum(nil))
+
+	// Save the file document
+	fileDoc := bson.M{
+		"_id":         f.id,
+		"filename":    f.filename,
+		"contentType": f.contentType,
+		"length":      f.length,
+		"chunkSize":   f.chunkSize,
+		"uploadDate":  f.uploadDate,
+		"md5":         f.md5,
+	}
+
+	if f.metadata != nil {
+		fileDoc["metadata"] = f.metadata
+	}
+
+	_, err := f.gfs.Files.mgoColl.InsertOne(ctx, convertMGOToOfficial(fileDoc))
+	if err != nil {
+		return err
+	}
+
+	// Save chunks
+	for i, chunkData := range f.chunks {
+		chunkDoc := bson.M{
+			"_id":      bson.NewObjectId(),
+			"files_id": f.id,
+			"n":        i,
+			"data":     chunkData,
+		}
+
+		_, err := f.gfs.Chunks.mgoColl.InsertOne(ctx, convertMGOToOfficial(chunkDoc))
+		if err != nil {
+			return err
+		}
+	}
+
+	// Ensure index on chunks collection
+	return f.gfs.Chunks.EnsureIndex(Index{
+		Key:    []string{"files_id", "n"},
+		Unique: true,
+	})
+}
+
+// GridFile property getters and setters (mgo API compatible)
+
+// Id returns the file ID
+func (f *ModernGridFile) Id() interface{} {
+	return f.id
+}
+
+// SetId sets the file ID
+func (f *ModernGridFile) SetId(id interface{}) {
+	f.id = id
+}
+
+// Name returns the filename
+func (f *ModernGridFile) Name() string {
+	return f.filename
+}
+
+// SetName sets the filename
+func (f *ModernGridFile) SetName(filename string) {
+	f.filename = filename
+}
+
+// ContentType returns the content type
+func (f *ModernGridFile) ContentType() string {
+	return f.contentType
+}
+
+// SetContentType sets the content type
+func (f *ModernGridFile) SetContentType(contentType string) {
+	f.contentType = contentType
+}
+
+// Size returns the file size
+func (f *ModernGridFile) Size() int64 {
+	return f.length
+}
+
+// MD5 returns the MD5 hash
+func (f *ModernGridFile) MD5() string {
+	return f.md5
+}
+
+// UploadDate returns the upload date
+func (f *ModernGridFile) UploadDate() time.Time {
+	return f.uploadDate
+}
+
+// SetUploadDate sets the upload date
+func (f *ModernGridFile) SetUploadDate(t time.Time) {
+	f.uploadDate = t
+}
+
+// GetMeta gets the metadata
+func (f *ModernGridFile) GetMeta(result interface{}) error {
+	if f.metadata == nil {
+		return nil
+	}
+	return mapStructToInterface(f.metadata, result)
+}
+
+// SetMeta sets the metadata
+func (f *ModernGridFile) SetMeta(metadata interface{}) {
+	f.metadata = metadata
+}
+
+// SetChunkSize sets the chunk size
+func (f *ModernGridFile) SetChunkSize(size int) {
+	f.chunkSize = size
+}
+
+// Additional session methods moved to modern_session.go
+// Additional collection methods moved to modern_collection.go
