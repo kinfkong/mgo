@@ -291,3 +291,26 @@ func (c *ModernColl) Upsert(selector, update interface{}) (*ChangeInfo, error) {
 
 	return changeInfo, nil
 }
+
+// UpdateAll updates all documents matching the selector (mgo API compatible)
+func (c *ModernColl) UpdateAll(selector, update interface{}) (*ChangeInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	filter := convertMGOToOfficial(selector)
+	// Wrap plain documents in $set operator for MongoDB compatibility
+	wrappedUpdate := wrapInSetOperator(update)
+	updateDoc := convertMGOToOfficial(wrappedUpdate)
+
+	result, err := c.mgoColl.UpdateMany(ctx, filter, updateDoc)
+	if err != nil {
+		return nil, err
+	}
+
+	changeInfo := &ChangeInfo{
+		Updated: int(result.ModifiedCount),
+		Matched: int(result.MatchedCount),
+	}
+
+	return changeInfo, nil
+}

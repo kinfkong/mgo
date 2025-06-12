@@ -171,3 +171,11 @@ func (db *ModernDB) GridFS(prefix string) *ModernGridFS {
 		prefix: prefix,
 	}
 }
+
+// Run executes a database command (mgo API compatible)
+func (db *ModernDB) Run(cmd interface{}, result interface{}) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return db.mgoDB.RunCommand(ctx, cmd).Decode(result)
+}

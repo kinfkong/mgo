@@ -17,6 +17,15 @@ func convertMGOToOfficial(input interface{}) interface{} {
 		return nil
 	}
 
+	// Handle pointers by dereferencing them
+	val := reflect.ValueOf(input)
+	if val.Kind() == reflect.Ptr {
+		if val.IsNil() {
+			return nil
+		}
+		return convertMGOToOfficial(val.Elem().Interface())
+	}
+
 	switch v := input.(type) {
 	case bson.M:
 		result := officialBson.M{}
@@ -50,16 +59,6 @@ func convertMGOToOfficial(input interface{}) interface{} {
 			objID := primitive.ObjectID{}
 			copy(objID[:], []byte(v))
 			return objID
-		}
-		return v
-	case string:
-		// Check if string is a valid ObjectId hex representation
-		if bson.IsObjectIdHex(v) {
-			if objId := bson.ObjectIdHex(v); objId.Valid() {
-				objID := primitive.ObjectID{}
-				copy(objID[:], []byte(objId))
-				return objID
-			}
 		}
 		return v
 	case time.Time:

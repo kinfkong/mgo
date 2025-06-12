@@ -34,6 +34,58 @@ func TestModernSortLimitOne(t *testing.T) {
 	}
 }
 
+// Test to verify that Sort("-updatedAt") sorts in descending order (reverse order)
+func TestModernSortDescendingOrder(t *testing.T) {
+	session := getModernSession(t)
+	defer session.Close()
+
+	c := session.DB(DBNAME_TEST_VIP).C(IKATAGO_CLUSTER_VIP_STAT_DATA_COLLECTION)
+	defer c.DropCollection()
+
+	// Create test data with different updatedAt times
+	now := time.Now()
+	data1 := &VIPStatData{ID: bson.NewObjectId(), Date: "2024-01-01", UpdatedAt: now.Add(-3 * time.Hour)} // oldest
+	data2 := &VIPStatData{ID: bson.NewObjectId(), Date: "2024-01-02", UpdatedAt: now.Add(-2 * time.Hour)} // middle
+	data3 := &VIPStatData{ID: bson.NewObjectId(), Date: "2024-01-03", UpdatedAt: now.Add(-1 * time.Hour)} // newest
+
+	// Insert in random order
+	c.Insert(data2)
+	c.Insert(data1)
+	c.Insert(data3)
+
+	// Query with Sort("-updatedAt") to get descending order
+	var results []VIPStatData
+	err := c.Find(bson.M{}).Sort("-updatedAt").All(&results)
+	if err != nil {
+		t.Fatalf("Find().Sort('-updatedAt').All() failed: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("Expected 3 results, got %d", len(results))
+	}
+
+	// Verify descending order: newest first, oldest last
+	if results[0].Date != "2024-01-03" {
+		t.Errorf("Expected first result to be '2024-01-03' (newest), got '%s'", results[0].Date)
+	}
+	if results[1].Date != "2024-01-02" {
+		t.Errorf("Expected second result to be '2024-01-02' (middle), got '%s'", results[1].Date)
+	}
+	if results[2].Date != "2024-01-01" {
+		t.Errorf("Expected third result to be '2024-01-01' (oldest), got '%s'", results[2].Date)
+	}
+
+	// Verify the actual timestamps are in descending order
+	if !results[0].UpdatedAt.After(results[1].UpdatedAt) {
+		t.Errorf("First result UpdatedAt (%v) should be after second result UpdatedAt (%v)",
+			results[0].UpdatedAt, results[1].UpdatedAt)
+	}
+	if !results[1].UpdatedAt.After(results[2].UpdatedAt) {
+		t.Errorf("Second result UpdatedAt (%v) should be after third result UpdatedAt (%v)",
+			results[1].UpdatedAt, results[2].UpdatedAt)
+	}
+}
+
 // 2. should add unit test to test the Find().Select().All() methods are working correctly.
 func TestModernFindSelectAll(t *testing.T) {
 	session := getModernSession(t)
@@ -72,6 +124,57 @@ func TestModernFindSelectAll(t *testing.T) {
 	// Check that other fields are zeroed
 	if !autoRenewUsers[0].MembershipExpiresAt.IsZero() {
 		t.Errorf("Expected MembershipExpiresAt to be zero, but got %v", autoRenewUsers[0].MembershipExpiresAt)
+	}
+}
+
+// Test to verify that Select(bson.M{"_id": 1}) only returns the _id field
+func TestModernSelectOnlyId(t *testing.T) {
+	session := getModernSession(t)
+	defer session.Close()
+
+	c := session.DB(DBNAME_TEST_VIP).C(IKATAGO_CLUSTER_VIP_STAT_DATA_COLLECTION)
+	defer c.DropCollection()
+
+	// Create test data with multiple fields
+	now := time.Now()
+	testData := &VIPStatData{
+		ID:        bson.NewObjectId(),
+		Date:      "2024-01-01",
+		UpdatedAt: now,
+	}
+
+	err := c.Insert(testData)
+	if err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+
+	// Query with Select to only get _id field
+	var results []VIPStatData
+	err = c.Find(bson.M{}).Select(bson.M{"_id": 1}).All(&results)
+	if err != nil {
+		t.Fatalf("Find().Select().All() failed: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("Expected 1 result, got %d", len(results))
+	}
+
+	result := results[0]
+
+	// Verify that _id is populated
+	if result.ID.Hex() == "" {
+		t.Errorf("Expected _id to be populated, but it's empty")
+	}
+	if result.ID != testData.ID {
+		t.Errorf("Expected _id to be %s, got %s", testData.ID.Hex(), result.ID.Hex())
+	}
+
+	// Verify that other fields are zero/empty (not selected)
+	if result.Date != "" {
+		t.Errorf("Expected Date to be empty (not selected), but got '%s'", result.Date)
+	}
+	if !result.UpdatedAt.IsZero() {
+		t.Errorf("Expected UpdatedAt to be zero (not selected), but got %v", result.UpdatedAt)
 	}
 }
 
