@@ -166,7 +166,9 @@ func (q *ModernQ) Apply(change Change, result interface{}) (*ChangeInfo, error) 
 	}
 
 	// For update/upsert operations
-	updateDoc = convertMGOToOfficial(change.Update)
+	// Wrap plain documents in $set operator for MongoDB compatibility
+	wrappedUpdate := wrapInSetOperator(change.Update)
+	updateDoc = convertMGOToOfficial(wrappedUpdate)
 	updateOpts := options.FindOneAndUpdate()
 	updateOpts.SetUpsert(change.Upsert)
 

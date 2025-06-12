@@ -1411,7 +1411,7 @@ type indexSpec struct {
 	Collation *Collation `bson:"collation,omitempty"`
 }
 
-// Index are special data structures that store a small portion of the collection’s
+// Index are special data structures that store a small portion of the collection's
 // data set in an easy to traverse form. The index stores the value of a specific
 // field or set of fields, ordered by the value of the field. The ordering of the
 // index entries supports efficient equality matches and range-based query operations.
@@ -3051,6 +3051,41 @@ func (c *Collection) UpdateAll(selector interface{}, update interface{}) (info *
 	return info, err
 }
 
+func hasUpdateOperators(doc interface{}) bool {
+	if doc == nil {
+		return false
+	}
+
+	switch d := doc.(type) {
+	case bson.M:
+		for key := range d {
+			if strings.HasPrefix(key, "$") {
+				return true
+			}
+		}
+	case bson.D:
+		for _, elem := range d {
+			if strings.HasPrefix(elem.Name, "$") {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for key := range d {
+			if strings.HasPrefix(key, "$") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func wrapInSetOperator(doc interface{}) interface{} {
+	if hasUpdateOperators(doc) {
+		return doc
+	}
+	return bson.M{"$set": doc}
+}
+
 // Upsert finds a single document matching the provided selector document
 // and modifies it according to the update document.  If no document matching
 // the selector is found, the update document is applied to the selector
@@ -3067,10 +3102,14 @@ func (c *Collection) Upsert(selector interface{}, update interface{}) (info *Cha
 	if selector == nil {
 		selector = bson.D{}
 	}
+
+	// Wrap plain documents in $set operator for MongoDB compatibility
+	wrappedUpdate := wrapInSetOperator(update)
+
 	op := updateOp{
 		Collection: c.FullName,
 		Selector:   selector,
-		Update:     update,
+		Update:     wrappedUpdate,
 		Flags:      1,
 		Upsert:     true,
 	}
@@ -3399,21 +3438,6 @@ func (q *Query) Sort(fields ...string) *Query {
 // such as rules for lettercase and accent marks.
 // When specifying collation, the locale field is mandatory; all other collation
 // fields are optional
-//
-// For example, to perform a case and diacritic insensitive query:
-//
-//	var res []bson.M
-//	collation := &mgo.Collation{Locale: "en", Strength: 1}
-//	err = db.C("mycoll").Find(bson.M{"a": "a"}).Collation(collation).All(&res)
-//	if err != nil {
-//	  return err
-//	}
-//
-// This query will match following documents:
-//
-//	{"a": "a"}
-//	{"a": "A"}
-//	{"a": "â"}
 //
 // Relevant documentation:
 //
@@ -4916,9 +4940,15 @@ func (q *Query) Apply(change Change, result interface{}) (info *ChangeInfo, err 
 		writeConcern = safeOp.query.(*getLastError)
 	}
 
+	// Wrap plain documents in $set operator for MongoDB compatibility when doing upserts
+	updateDoc := change.Update
+	if change.Upsert && !change.Remove {
+		updateDoc = wrapInSetOperator(change.Update)
+	}
+
 	cmd := findModifyCmd{
 		Collection:   cname,
-		Update:       change.Update,
+		Update:       updateDoc,
 		Upsert:       change.Upsert,
 		Remove:       change.Remove,
 		New:          change.ReturnNew,

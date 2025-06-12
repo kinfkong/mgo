@@ -9,6 +9,7 @@ import (
 
 	"github.com/globalsign/mgo/bson"
 	officialBson "go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	mongodrv "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -127,6 +128,56 @@ func (c *ModernColl) EnsureIndexKey(key ...string) error {
 	return c.EnsureIndex(Index{Key: key})
 }
 
+// Indexes returns a list of all indexes for the collection.
+func (c *ModernColl) Indexes() ([]Index, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cursor, err := c.mgoColl.Indexes().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var indexes []Index
+	for cursor.Next(ctx) {
+		var indexDoc primitive.D
+		if err := cursor.Decode(&indexDoc); err != nil {
+			return nil, err
+		}
+
+		indexMap := indexDoc.Map()
+
+		var key []string
+		if keyVal, ok := indexMap["key"]; ok {
+			if keyDoc, ok := keyVal.(primitive.D); ok {
+				for _, elem := range keyDoc {
+					order := ""
+					if v, ok := elem.Value.(int32); ok && v == -1 {
+						order = "-"
+					}
+					key = append(key, order+elem.Key)
+				}
+			}
+		}
+
+		index := Index{
+			Name: indexMap["name"].(string),
+			Key:  key,
+		}
+		if unique, ok := indexMap["unique"]; ok {
+			index.Unique = unique.(bool)
+		}
+		if sparse, ok := indexMap["sparse"]; ok {
+			index.Sparse = sparse.(bool)
+		}
+
+		indexes = append(indexes, index)
+	}
+
+	return indexes, cursor.Err()
+}
+
 // DropCollection drops the collection
 func (c *ModernColl) DropCollection() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -219,7 +270,9 @@ func (c *ModernColl) Upsert(selector, update interface{}) (*ChangeInfo, error) {
 	defer cancel()
 
 	filter := convertMGOToOfficial(selector)
-	updateDoc := convertMGOToOfficial(update)
+	// Wrap plain documents in $set operator for MongoDB compatibility
+	wrappedUpdate := wrapInSetOperator(update)
+	updateDoc := convertMGOToOfficial(wrappedUpdate)
 
 	opts := options.Update().SetUpsert(true)
 	result, err := c.mgoColl.UpdateOne(ctx, filter, updateDoc, opts)
