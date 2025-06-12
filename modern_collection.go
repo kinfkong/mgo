@@ -20,7 +20,9 @@ func (c *ModernColl) Insert(docs ...interface{}) error {
 
 	convertedDocs := make([]interface{}, len(docs))
 	for i, doc := range docs {
-		convertedDocs[i] = convertMGOToOfficial(doc)
+		// Ensure document has a proper _id field
+		preparedDoc := ensureObjectId(doc)
+		convertedDocs[i] = convertMGOToOfficial(preparedDoc)
 	}
 
 	if len(convertedDocs) == 1 {

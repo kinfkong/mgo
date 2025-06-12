@@ -4,6 +4,7 @@ package mgo
 
 import (
 	"reflect"
+	"time"
 
 	"github.com/globalsign/mgo/bson"
 	officialBson "go.mongodb.org/mongo-driver/bson"
@@ -38,6 +39,12 @@ func convertMGOToOfficial(input interface{}) interface{} {
 			result[i] = convertMGOToOfficial(item)
 		}
 		return result
+	case map[string]interface{}:
+		result := officialBson.M{}
+		for key, value := range v {
+			result[key] = convertMGOToOfficial(value)
+		}
+		return result
 	case bson.ObjectId:
 		if len(v) == 12 {
 			objID := primitive.ObjectID{}
@@ -45,7 +52,35 @@ func convertMGOToOfficial(input interface{}) interface{} {
 			return objID
 		}
 		return v
+	case string:
+		// Check if string is a valid ObjectId hex representation
+		if bson.IsObjectIdHex(v) {
+			if objId := bson.ObjectIdHex(v); objId.Valid() {
+				objID := primitive.ObjectID{}
+				copy(objID[:], []byte(objId))
+				return objID
+			}
+		}
+		return v
+	case time.Time:
+		// Convert time.Time to primitive.DateTime
+		return primitive.NewDateTimeFromTime(v)
 	default:
+		// Handle structs by marshaling/unmarshaling with bson tags
+		val := reflect.ValueOf(input)
+		if val.Kind() == reflect.Struct || (val.Kind() == reflect.Ptr && val.Elem().Kind() == reflect.Struct) {
+			// Marshal to bson, then unmarshal to map to respect bson tags
+			data, err := bson.Marshal(input)
+			if err != nil {
+				return input // fallback to original
+			}
+			var result bson.M
+			err = bson.Unmarshal(data, &result)
+			if err != nil {
+				return input // fallback to original
+			}
+			return convertMGOToOfficial(result)
+		}
 		return v
 	}
 }
@@ -77,8 +112,17 @@ func convertOfficialToMGO(input interface{}) interface{} {
 			result[i] = convertOfficialToMGO(item)
 		}
 		return result
+	case map[string]interface{}:
+		result := bson.M{}
+		for key, value := range v {
+			result[key] = convertOfficialToMGO(value)
+		}
+		return result
 	case primitive.ObjectID:
 		return bson.ObjectId(v[:])
+	case primitive.DateTime:
+		// Convert primitive.DateTime to time.Time
+		return v.Time()
 	default:
 		return v
 	}
@@ -130,4 +174,60 @@ func mapStructToInterface(src, dst interface{}) error {
 		return err
 	}
 	return bson.Unmarshal(data, dst)
+}
+
+// ensureObjectId ensures that a document has a proper _id field
+func ensureObjectId(doc interface{}) interface{} {
+	if doc == nil {
+		return doc
+	}
+
+	switch v := doc.(type) {
+	case bson.M:
+		if _, hasId := v["_id"]; !hasId {
+			v["_id"] = bson.NewObjectId()
+		}
+		return v
+	case map[string]interface{}:
+		if _, hasId := v["_id"]; !hasId {
+			v["_id"] = bson.NewObjectId()
+		}
+		return v
+	default:
+		// For struct types, use reflection to check for _id field
+		val := reflect.ValueOf(doc)
+		if val.Kind() == reflect.Ptr {
+			val = val.Elem()
+		}
+
+		if val.Kind() == reflect.Struct {
+			// Try to find an _id field or Id field
+			idField := val.FieldByName("Id")
+			if !idField.IsValid() {
+				idField = val.FieldByName("ID")
+			}
+			if !idField.IsValid() {
+				// Look for bson:"_id" tag
+				for i := 0; i < val.NumField(); i++ {
+					field := val.Type().Field(i)
+					if tag := field.Tag.Get("bson"); tag == "_id" || tag == "_id,omitempty" {
+						idField = val.Field(i)
+						break
+					}
+				}
+			}
+
+			if idField.IsValid() && idField.CanSet() {
+				// Check if the field is zero/empty
+				if idField.Kind() == reflect.String && idField.String() == "" {
+					idField.SetString(string(bson.NewObjectId()))
+				} else if idField.Type() == reflect.TypeOf(bson.ObjectId("")) {
+					if idField.String() == "" {
+						idField.Set(reflect.ValueOf(bson.NewObjectId()))
+					}
+				}
+			}
+		}
+		return doc
+	}
 }

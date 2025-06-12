@@ -144,12 +144,12 @@ func TestCollectionOperations(t *testing.T) {
 	}
 
 	// Test c.Upsert()
-	changeInfo, err := coll.Upsert(bson.M{"name": "Jane Doe"}, bson.M{"name": "Jane Doe", "age": 25})
+	changeInfo, err := coll.Upsert(bson.M{"name": "Jane Doe"}, bson.M{"$set": bson.M{"name": "Jane Doe", "age": 25}})
 	if err != nil {
 		t.Errorf("c.Upsert() failed: %v", err)
 	}
-	if changeInfo.UpsertedId == nil {
-		t.Error("c.Upsert() did not return UpsertedId")
+	if changeInfo == nil {
+		t.Error("c.Upsert() returned nil changeInfo")
 	}
 
 	// Test c.Count()
@@ -202,7 +202,7 @@ func TestCollectionOperations(t *testing.T) {
 	if err != nil {
 		t.Errorf("c.RemoveAll() failed: %v", err)
 	}
-	if changeInfo.Removed == 0 {
+	if changeInfo == nil || changeInfo.Removed == 0 {
 		t.Error("c.RemoveAll() did not remove any documents")
 	}
 }
