@@ -3843,6 +3843,16 @@ func (db *Database) run(socket *mongoSocket, cmd, result interface{}) (err error
 		cmd = bson.D{{Name: name, Value: 1}}
 	}
 
+	// Handle complex bson.D structures that might cause marshaling issues
+	if bsonCmd, ok := cmd.(bson.D); ok {
+		// Create a safer bson.M version to avoid marshaling issues
+		cmdMap := bson.M{}
+		for _, elem := range bsonCmd {
+			cmdMap[elem.Name] = elem.Value
+		}
+		cmd = cmdMap
+	}
+
 	// Collection.Find:
 	session := db.Session
 	session.m.RLock()
@@ -4935,9 +4945,22 @@ func (q *Query) Apply(change Change, result interface{}) (info *ChangeInfo, err 
 	session.m.RUnlock()
 	var writeConcern interface{}
 	if safeOp == nil {
-		writeConcern = bson.D{{Name: "w", Value: 0}}
+		// Explicitly disable retryable writes to avoid "Retryable writes are not supported" error
+		writeConcern = bson.D{{Name: "w", Value: 0}, {Name: "retryWrites", Value: false}}
 	} else {
-		writeConcern = safeOp.query.(*getLastError)
+		// Use existing safe operation but ensure retryable writes are disabled
+		if gleConcern, ok := safeOp.query.(*getLastError); ok {
+			// Create a modified write concern that disables retryable writes
+			writeConcern = bson.D{
+				{Name: "w", Value: gleConcern.W},
+				{Name: "wtimeout", Value: gleConcern.WTimeout},
+				{Name: "fsync", Value: gleConcern.FSync},
+				{Name: "j", Value: gleConcern.J},
+				{Name: "retryWrites", Value: false},
+			}
+		} else {
+			writeConcern = bson.D{{Name: "w", Value: 1}, {Name: "retryWrites", Value: false}}
+		}
 	}
 
 	// Wrap plain documents in $set operator for MongoDB compatibility when doing upserts
@@ -4967,6 +4990,15 @@ func (q *Query) Apply(change Change, result interface{}) (info *ChangeInfo, err 
 		err = session.DB(dbname).Run(&cmd, &doc)
 		if err == nil {
 			break
+		}
+		// Handle retryable writes error specifically
+		if qerr, ok := err.(*QueryError); ok && strings.Contains(qerr.Message, "Retryable writes are not supported") {
+			// Retry with a more basic write concern
+			cmd.WriteConcern = bson.D{{Name: "w", Value: 1}}
+			err = session.DB(dbname).Run(&cmd, &doc)
+			if err == nil {
+				break
+			}
 		}
 		if change.Upsert && IsDup(err) && i+1 < maxUpsertRetries {
 			// Retry duplicate key errors on upserts.
@@ -5466,9 +5498,22 @@ func (c *Collection) writeOpQuery(socket *mongoSocket, safeOp *queryOp, op inter
 func (c *Collection) writeOpCommand(socket *mongoSocket, safeOp *queryOp, op interface{}, ordered, bypassValidation bool) (lerr *LastError, err error) {
 	var writeConcern interface{}
 	if safeOp == nil {
-		writeConcern = bson.D{{Name: "w", Value: 0}}
+		// Explicitly disable retryable writes to avoid "Retryable writes are not supported" error
+		writeConcern = bson.D{{Name: "w", Value: 0}, {Name: "retryWrites", Value: false}}
 	} else {
-		writeConcern = safeOp.query.(*getLastError)
+		// Use existing safe operation but ensure retryable writes are disabled
+		if gleConcern, ok := safeOp.query.(*getLastError); ok {
+			// Create a modified write concern that disables retryable writes
+			writeConcern = bson.D{
+				{Name: "w", Value: gleConcern.W},
+				{Name: "wtimeout", Value: gleConcern.WTimeout},
+				{Name: "fsync", Value: gleConcern.FSync},
+				{Name: "j", Value: gleConcern.J},
+				{Name: "retryWrites", Value: false},
+			}
+		} else {
+			writeConcern = bson.D{{Name: "w", Value: 1}, {Name: "retryWrites", Value: false}}
+		}
 	}
 
 	var cmd bson.D

@@ -19,7 +19,10 @@ func DialModernMGO(mongoURL string) (*ModernMGO, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongodrv.Connect(ctx, options.Client().ApplyURI(mongoURL))
+	// Disable retryable writes to avoid "Retryable writes are not supported" error
+	clientOptions := options.Client().ApplyURI(mongoURL).SetRetryWrites(false)
+
+	client, err := mongodrv.Connect(ctx, clientOptions)
 	if err != nil {
 		return nil, err
 	}
