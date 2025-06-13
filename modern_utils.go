@@ -3,6 +3,7 @@
 package mgo
 
 import (
+	stdlog "log"
 	"reflect"
 	"time"
 
@@ -10,6 +11,9 @@ import (
 	officialBson "go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
+
+// Debug flag to enable conversion debugging
+var DebugConversion = false
 
 // Conversion helpers
 func convertMGOToOfficial(input interface{}) interface{} {
@@ -43,6 +47,13 @@ func convertMGOToOfficial(input interface{}) interface{} {
 			})
 		}
 		return result
+	case []bson.M:
+		// Handle []bson.M specifically for $or, $and, etc. query operators
+		result := make([]interface{}, len(v))
+		for i, item := range v {
+			result[i] = convertMGOToOfficial(item)
+		}
+		return result
 	case []interface{}:
 		result := make([]interface{}, len(v))
 		for i, item := range v {
@@ -66,8 +77,20 @@ func convertMGOToOfficial(input interface{}) interface{} {
 		// Convert time.Time to primitive.DateTime
 		return primitive.NewDateTimeFromTime(v)
 	default:
+		// Check if it's a slice of bson.M using reflection
+		if val.Kind() == reflect.Slice {
+			elemType := val.Type().Elem()
+			if elemType == reflect.TypeOf(bson.M{}) {
+				// Handle slice of bson.M
+				result := make([]interface{}, val.Len())
+				for i := 0; i < val.Len(); i++ {
+					result[i] = convertMGOToOfficial(val.Index(i).Interface())
+				}
+				return result
+			}
+		}
+
 		// Handle structs by marshaling/unmarshaling with bson tags
-		val := reflect.ValueOf(input)
 		if val.Kind() == reflect.Struct || (val.Kind() == reflect.Ptr && val.Elem().Kind() == reflect.Struct) {
 			// Marshal to bson, then unmarshal to map to respect bson tags
 			data, err := bson.Marshal(input)
@@ -230,4 +253,31 @@ func ensureObjectId(doc interface{}) interface{} {
 		}
 		return doc
 	}
+}
+
+// convertMGOToOfficialWithDebug is a debug version that logs conversions
+func convertMGOToOfficialWithDebug(input interface{}, depth int) interface{} {
+	indent := ""
+	for i := 0; i < depth; i++ {
+		indent += "  "
+	}
+
+	if DebugConversion {
+		stdlog.Printf("%sConverting: %T = %v", indent, input, input)
+	}
+
+	result := convertMGOToOfficial(input)
+
+	if DebugConversion {
+		stdlog.Printf("%sResult: %T = %v", indent, result, result)
+	}
+
+	return result
+}
+
+// ConvertMGOToOfficialDebug is a public debug function
+func ConvertMGOToOfficialDebug(input interface{}) interface{} {
+	DebugConversion = true
+	defer func() { DebugConversion = false }()
+	return convertMGOToOfficialWithDebug(input, 0)
 }

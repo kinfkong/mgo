@@ -769,3 +769,256 @@ func TestModernWrapperCompleteMethods(t *testing.T) {
 
 	t.Log("🎉 All mgo methods are working correctly!")
 }
+
+// TestModernOrQuery tests the $or query functionality with []bson.M
+func TestModernOrQuery(t *testing.T) {
+	t.Log("Testing Modern Wrapper $or query with []bson.M")
+
+	session, err := mgo.DialModernMGO("mongodb://localhost:27017/test")
+	if err != nil {
+		t.Fatalf("Failed to connect to MongoDB: %v", err)
+	}
+	defer session.Close()
+
+	c := session.DB("test").C("or_query_test")
+	c.DropCollection()
+
+	// Insert test data with nested structure similar to the user's case
+	testData := []interface{}{
+		bson.M{
+			"_id":        bson.NewObjectId(),
+			"enabled":    true,
+			"conditions": bson.M{"deviceId": "device1"},
+		},
+		bson.M{
+			"_id":              bson.NewObjectId(),
+			"enabled":          true,
+			"secondConditions": bson.M{"deviceId": "device2"},
+		},
+		bson.M{
+			"_id":        bson.NewObjectId(),
+			"enabled":    false,
+			"conditions": bson.M{"deviceId": "device1"},
+		},
+	}
+
+	err = c.Insert(testData...)
+	if err != nil {
+		t.Fatalf("Failed to insert test data: %v", err)
+	}
+	t.Log("✓ Test data inserted")
+
+	// Test the $or query that was causing the issue
+	deviceID := "device1"
+	query := bson.M{
+		"$or": []bson.M{
+			{
+				"conditions.deviceId": deviceID,
+			},
+			{
+				"secondConditions.deviceId": deviceID,
+			},
+		},
+		"enabled": true,
+	}
+
+	var results []bson.M
+	err = c.Find(query).All(&results)
+	if err != nil {
+		t.Errorf("$or query failed: %v", err)
+		return
+	}
+	t.Log("✓ $or query successful")
+	t.Logf("  Found %d documents", len(results))
+
+	// Should find exactly 1 document (the one with conditions.deviceId = device1 and enabled = true)
+	if len(results) != 1 {
+		t.Errorf("Expected 1 document, got %d", len(results))
+		return
+	}
+
+	// Verify the found document has the correct structure
+	foundDoc := results[0]
+	if enabled, ok := foundDoc["enabled"].(bool); !ok || !enabled {
+		t.Errorf("Expected enabled=true, got %v", foundDoc["enabled"])
+		return
+	}
+
+	// Check that it has conditions with deviceId
+	if conditions, ok := foundDoc["conditions"].(bson.M); ok {
+		if deviceId, ok := conditions["deviceId"].(string); !ok || deviceId != "device1" {
+			t.Errorf("Expected conditions.deviceId='device1', got %v", conditions["deviceId"])
+			return
+		}
+	} else {
+		t.Errorf("Expected conditions field, got %v", foundDoc["conditions"])
+		return
+	}
+
+	t.Log("✓ $or query result verification successful")
+
+	// Cleanup
+	err = c.DropCollection()
+	if err != nil {
+		t.Errorf("Cleanup failed: %v", err)
+	} else {
+		t.Log("✓ Cleanup successful")
+	}
+}
+
+// TestModernOrQueryDetailedReproduction tests the exact scenario from the user's code
+func TestModernOrQueryDetailedReproduction(t *testing.T) {
+	t.Log("Testing Modern Wrapper $or query with exact user scenario")
+
+	session, err := mgo.DialModernMGO("mongodb://localhost:27017/test")
+	if err != nil {
+		t.Fatalf("Failed to connect to MongoDB: %v", err)
+	}
+	defer session.Close()
+
+	c := session.DB("test").C("triggers")
+	c.DropCollection()
+
+	// Create test data that mimics the user's trigger structure
+	deviceID := "test-device-123"
+
+	testTriggers := []interface{}{
+		bson.M{
+			"_id":     bson.NewObjectId(),
+			"enabled": true,
+			"conditions": bson.M{
+				"deviceId": deviceID,
+				"type":     "sensor",
+			},
+			"name": "trigger1",
+		},
+		bson.M{
+			"_id":     bson.NewObjectId(),
+			"enabled": true,
+			"secondConditions": bson.M{
+				"deviceId": deviceID,
+				"type":     "actuator",
+			},
+			"name": "trigger2",
+		},
+		bson.M{
+			"_id":     bson.NewObjectId(),
+			"enabled": false, // This should not be returned
+			"conditions": bson.M{
+				"deviceId": deviceID,
+				"type":     "sensor",
+			},
+			"name": "trigger3",
+		},
+		bson.M{
+			"_id":     bson.NewObjectId(),
+			"enabled": true,
+			"conditions": bson.M{
+				"deviceId": "other-device", // Different device
+				"type":     "sensor",
+			},
+			"name": "trigger4",
+		},
+	}
+
+	err = c.Insert(testTriggers...)
+	if err != nil {
+		t.Fatalf("Failed to insert test triggers: %v", err)
+	}
+	t.Log("✓ Test triggers inserted")
+
+	// Create a mock device object similar to user's code
+	device := struct {
+		ID string
+	}{
+		ID: deviceID,
+	}
+
+	// The exact query structure from the user's code
+	query := bson.M{
+		"$or": []bson.M{
+			{
+				"conditions.deviceId": device.ID,
+			},
+			{
+				"secondConditions.deviceId": device.ID,
+			},
+		},
+		"enabled": true,
+	}
+
+	// Test with Find().All() like the user's code
+	var triggers []bson.M
+	err = c.Find(query).All(&triggers)
+	if err != nil {
+		t.Errorf("Failed to find triggers: %v", err)
+		return
+	}
+
+	t.Logf("✓ Find triggers successful, found %d triggers", len(triggers))
+
+	// Should find exactly 2 triggers (trigger1 and trigger2)
+	if len(triggers) != 2 {
+		t.Errorf("Expected 2 triggers, got %d", len(triggers))
+		for i, trigger := range triggers {
+			t.Logf("  Trigger %d: %v", i, trigger["name"])
+		}
+		return
+	}
+
+	// Verify the found triggers
+	foundNames := make(map[string]bool)
+	for _, trigger := range triggers {
+		name := trigger["name"].(string)
+		foundNames[name] = true
+
+		enabled := trigger["enabled"].(bool)
+		if !enabled {
+			t.Errorf("Found disabled trigger: %s", name)
+			return
+		}
+	}
+
+	if !foundNames["trigger1"] || !foundNames["trigger2"] {
+		t.Errorf("Expected to find trigger1 and trigger2, found: %v", foundNames)
+		return
+	}
+
+	t.Log("✓ Trigger query result verification successful")
+
+	// Test with different query structures to ensure robustness
+	// Test with more complex nested structure
+	complexQuery := bson.M{
+		"$and": []bson.M{
+			{
+				"$or": []bson.M{
+					{"conditions.deviceId": device.ID},
+					{"secondConditions.deviceId": device.ID},
+				},
+			},
+			{"enabled": true},
+		},
+	}
+
+	var complexResults []bson.M
+	err = c.Find(complexQuery).All(&complexResults)
+	if err != nil {
+		t.Errorf("Complex query failed: %v", err)
+		return
+	}
+
+	if len(complexResults) != 2 {
+		t.Errorf("Complex query expected 2 results, got %d", len(complexResults))
+		return
+	}
+
+	t.Log("✓ Complex nested query successful")
+
+	// Cleanup
+	err = c.DropCollection()
+	if err != nil {
+		t.Errorf("Cleanup failed: %v", err)
+	} else {
+		t.Log("✓ Cleanup successful")
+	}
+}
