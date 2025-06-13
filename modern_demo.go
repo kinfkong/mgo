@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/globalsign/mgo/bson"
+	officialBson "go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	mongodrv "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -254,11 +256,12 @@ func (gfs *ModernGridFS) Open(filename string) (*ModernGridFile, error) {
 	defer cancel()
 
 	// Find the most recent file with this filename
-	filter := bson.M{"filename": filename}
-	opts := options.FindOne().SetSort(bson.M{"uploadDate": -1})
+	filter := convertMGOToOfficial(bson.M{"filename": filename})
+	// Use officialBson.D to ensure proper sort order
+	opts := options.FindOne().SetSort(officialBson.D{{"uploadDate", -1}})
 
 	var fileDoc bson.M
-	err := gfs.Files.mgoColl.FindOne(ctx, convertMGOToOfficial(filter), opts).Decode(&fileDoc)
+	err := gfs.Files.mgoColl.FindOne(ctx, filter, opts).Decode(&fileDoc)
 	if err != nil {
 		if err == mongodrv.ErrNoDocuments {
 			return nil, ErrNotFound
@@ -309,9 +312,9 @@ func (gfs *ModernGridFS) OpenId(id interface{}) (*ModernGridFile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	filter := bson.M{"_id": id}
+	filter := convertMGOToOfficial(bson.M{"_id": id})
 	var fileDoc bson.M
-	err := gfs.Files.mgoColl.FindOne(ctx, convertMGOToOfficial(filter)).Decode(&fileDoc)
+	err := gfs.Files.mgoColl.FindOne(ctx, filter).Decode(&fileDoc)
 	if err != nil {
 		if err == mongodrv.ErrNoDocuments {
 			return nil, ErrNotFound
@@ -363,8 +366,8 @@ func (gfs *ModernGridFS) Remove(filename string) error {
 	defer cancel()
 
 	// Find all files with this filename to get their IDs
-	filter := bson.M{"filename": filename}
-	cursor, err := gfs.Files.mgoColl.Find(ctx, convertMGOToOfficial(filter))
+	filter := convertMGOToOfficial(bson.M{"filename": filename})
+	cursor, err := gfs.Files.mgoColl.Find(ctx, filter)
 	if err != nil {
 		return err
 	}
@@ -397,15 +400,15 @@ func (gfs *ModernGridFS) RemoveId(id interface{}) error {
 	defer cancel()
 
 	// Remove the file document
-	fileFilter := bson.M{"_id": id}
-	_, err := gfs.Files.mgoColl.DeleteOne(ctx, convertMGOToOfficial(fileFilter))
+	fileFilter := convertMGOToOfficial(bson.M{"_id": id})
+	_, err := gfs.Files.mgoColl.DeleteOne(ctx, fileFilter)
 	if err != nil {
 		return err
 	}
 
 	// Remove the chunks
-	chunkFilter := bson.M{"files_id": id}
-	_, err = gfs.Chunks.mgoColl.DeleteMany(ctx, convertMGOToOfficial(chunkFilter))
+	chunkFilter := convertMGOToOfficial(bson.M{"files_id": id})
+	_, err = gfs.Chunks.mgoColl.DeleteMany(ctx, chunkFilter)
 	return err
 }
 
@@ -489,10 +492,11 @@ func (f *ModernGridFile) Read(data []byte) (int, error) {
 
 	// Load chunks if not loaded
 	if f.chunks == nil {
-		filter := bson.M{"files_id": f.id}
-		opts := options.Find().SetSort(bson.M{"n": 1})
+		filter := convertMGOToOfficial(bson.M{"files_id": f.id})
+		// Use officialBson.D to ensure proper sort order
+		opts := options.Find().SetSort(officialBson.D{{"n", 1}})
 
-		cursor, err := f.gfs.Chunks.mgoColl.Find(ctx, convertMGOToOfficial(filter), opts)
+		cursor, err := f.gfs.Chunks.mgoColl.Find(ctx, filter, opts)
 		if err != nil {
 			return 0, err
 		}
@@ -504,7 +508,20 @@ func (f *ModernGridFile) Read(data []byte) (int, error) {
 			if err := cursor.Decode(&chunkDoc); err != nil {
 				continue
 			}
-			if chunkData, ok := chunkDoc["data"].([]byte); ok {
+
+			// Handle different data types returned by MongoDB driver
+			var chunkData []byte
+			switch data := chunkDoc["data"].(type) {
+			case []byte:
+				chunkData = data
+			case primitive.Binary:
+				chunkData = data.Data
+			default:
+				// Try to convert to []byte if possible
+				continue
+			}
+
+			if len(chunkData) > 0 {
 				f.chunks = append(f.chunks, chunkData)
 			}
 		}

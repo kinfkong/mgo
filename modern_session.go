@@ -130,7 +130,7 @@ func (m *ModernMGO) BuildInfo() (BuildInfo, error) {
 		OpenSSLVersion string `bson:"OpenSSLVersion"`
 	}
 
-	err := db.RunCommand(ctx, officialBson.D{{Key: "buildInfo", Value: 1}}).Decode(&result)
+	err := db.RunCommand(ctx, officialBson.M{"buildInfo": 1}).Decode(&result)
 	if err != nil {
 		return BuildInfo{}, err
 	}

@@ -89,7 +89,8 @@ func (c *ModernColl) EnsureIndex(index Index) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	keys := officialBson.D{}
+	// Use officialBson.D to maintain key order for index creation
+	var keys officialBson.D
 	for _, key := range index.Key {
 		order := 1
 		fieldName := key

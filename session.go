@@ -404,15 +404,20 @@ func ParseURL(url string) (*DialInfo, error) {
 			}
 		case "readPreferenceTags":
 			tags := strings.Split(opt.value, ",")
-			var doc bson.D
+			doc := bson.M{}
 			for _, tag := range tags {
 				kvp := strings.Split(tag, ":")
 				if len(kvp) != 2 {
 					return nil, errors.New("bad value for readPreferenceTags: " + opt.value)
 				}
-				doc = append(doc, bson.DocElem{Name: strings.TrimSpace(kvp[0]), Value: strings.TrimSpace(kvp[1])})
+				doc[strings.TrimSpace(kvp[0])] = strings.TrimSpace(kvp[1])
 			}
-			readPreferenceTagSets = append(readPreferenceTagSets, doc)
+			// Convert to bson.D for compatibility
+			var bsonDoc bson.D
+			for k, v := range doc {
+				bsonDoc = append(bsonDoc, bson.DocElem{Name: k, Value: v})
+			}
+			readPreferenceTagSets = append(readPreferenceTagSets, bsonDoc)
 		case "minPoolSize":
 			minPoolSize, err = strconv.Atoi(opt.value)
 			if err != nil {
@@ -3840,7 +3845,7 @@ type getMoreCmd struct {
 func (db *Database) run(socket *mongoSocket, cmd, result interface{}) (err error) {
 	// Database.Run:
 	if name, ok := cmd.(string); ok {
-		cmd = bson.D{{Name: name, Value: 1}}
+		cmd = bson.M{name: 1}
 	}
 
 	// Handle complex bson.D structures that might cause marshaling issues
@@ -3957,7 +3962,7 @@ func (db *Database) CollectionNames() (names []string, err error) {
 		Collections []bson.Raw
 		Cursor      cursorData
 	}
-	err = db.With(cloned).Run(bson.D{{Name: "listCollections", Value: 1}, {Name: "cursor", Value: bson.D{{Name: "batchSize", Value: batchSize}}}}, &result)
+	err = db.With(cloned).Run(bson.M{"listCollections": 1, "cursor": bson.M{"batchSize": batchSize}}, &result)
 	if err == nil {
 		firstBatch := result.Collections
 		if firstBatch == nil {
@@ -4581,11 +4586,11 @@ func (iter *Iter) getMoreCmd() *queryOp {
 type countCmd struct {
 	Count     string
 	Query     interface{}
-	Limit     int32      `bson:",omitempty"`
-	Skip      int32      `bson:",omitempty"`
-	Hint      bson.D     `bson:"hint,omitempty"`
-	MaxTimeMS int        `bson:"maxTimeMS,omitempty"`
-	Collation *Collation `bson:"collation,omitempty"`
+	Limit     int32       `bson:",omitempty"`
+	Skip      int32       `bson:",omitempty"`
+	Hint      interface{} `bson:"hint,omitempty"`
+	MaxTimeMS int         `bson:"maxTimeMS,omitempty"`
+	Collation *Collation  `bson:"collation,omitempty"`
 }
 
 // Count returns the total number of documents in the result set.
