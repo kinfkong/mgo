@@ -99,14 +99,14 @@ func (q *ModernQ) Iter() *ModernIt {
 
 // Sort sets sort order
 func (q *ModernQ) Sort(fields ...string) *ModernQ {
-	sort := officialBson.M{}
+	var sort officialBson.D
 	for _, field := range fields {
 		order := 1
 		if strings.HasPrefix(field, "-") {
 			order = -1
 			field = field[1:]
 		}
-		sort[field] = order
+		sort = append(sort, officialBson.E{Key: field, Value: order})
 	}
 	q.sort = sort
 	return q

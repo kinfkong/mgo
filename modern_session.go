@@ -180,5 +180,33 @@ func (db *ModernDB) Run(cmd interface{}, result interface{}) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	return db.mgoDB.RunCommand(ctx, cmd).Decode(result)
+	command := convertMGOToOfficial(cmd)
+	return db.mgoDB.RunCommand(ctx, command).Decode(result)
+}
+
+// Run executes a database command (mgo API compatible with 3-parameter interface)
+func (m *ModernMGO) Run(adminFlag interface{}, cmd interface{}, result interface{}) error {
+	// First parameter determines which database to use
+	// If true or admin-like, use admin database; otherwise use default database
+	var dbName string
+
+	switch v := adminFlag.(type) {
+	case bool:
+		if v {
+			dbName = "admin"
+		} else {
+			dbName = m.dbName
+		}
+	case string:
+		if v == "admin" || v == "true" {
+			dbName = "admin"
+		} else {
+			dbName = m.dbName
+		}
+	default:
+		// Default to admin for backward compatibility
+		dbName = "admin"
+	}
+
+	return m.DB(dbName).Run(cmd, result)
 }

@@ -34,10 +34,13 @@ func convertMGOToOfficial(input interface{}) interface{} {
 		}
 		return result
 	case bson.D:
-		// Convert bson.D to officialBson.M to avoid marshaling issues
-		result := officialBson.M{}
+		// Convert bson.D to officialBson.D to preserve order (important for commands)
+		result := officialBson.D{}
 		for _, elem := range v {
-			result[elem.Name] = convertMGOToOfficial(elem.Value)
+			result = append(result, officialBson.E{
+				Key:   elem.Name,
+				Value: convertMGOToOfficial(elem.Value),
+			})
 		}
 		return result
 	case []interface{}:
