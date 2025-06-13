@@ -110,10 +110,10 @@ func (p *ModernPipe) Explain(result interface{}) error {
 	}
 
 	// Create explain command
-	explainCmd := officialBson.D{
-		{Key: "aggregate", Value: p.collection.name},
-		{Key: "pipeline", Value: pipeline},
-		{Key: "explain", Value: true},
+	explainCmd := officialBson.M{
+		"aggregate": p.collection.name,
+		"pipeline":  pipeline,
+		"explain":   true,
 	}
 
 	db := p.collection.mgoColl.Database()

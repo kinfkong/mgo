@@ -38,7 +38,7 @@ func (c *ModernColl) Insert(docs ...interface{}) error {
 func (c *ModernColl) Find(query interface{}) *ModernQ {
 	var filter interface{}
 	if query == nil {
-		filter = officialBson.D{} // Empty document for "find all"
+		filter = officialBson.M{} // Empty document for "find all"
 	} else {
 		filter = convertMGOToOfficial(query)
 	}
@@ -56,7 +56,7 @@ func (c *ModernColl) Count() (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	count, err := c.mgoColl.CountDocuments(ctx, officialBson.D{})
+	count, err := c.mgoColl.CountDocuments(ctx, officialBson.M{})
 	return int(count), err
 }
 
@@ -76,7 +76,9 @@ func (c *ModernColl) Update(selector, update interface{}) error {
 	defer cancel()
 
 	filter := convertMGOToOfficial(selector)
-	updateDoc := convertMGOToOfficial(update)
+	// Wrap plain documents in $set operator for MongoDB compatibility
+	wrappedUpdate := wrapInSetOperator(update)
+	updateDoc := convertMGOToOfficial(wrappedUpdate)
 
 	_, err := c.mgoColl.UpdateOne(ctx, filter, updateDoc)
 	return err
