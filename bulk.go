@@ -20,8 +20,7 @@ import (
 //
 // Relevant documentation:
 //
-//   http://blog.mongodb.org/post/84922794768/mongodbs-new-bulk-api
-//
+//	http://blog.mongodb.org/post/84922794768/mongodbs-new-bulk-api
 type Bulk struct {
 	c       *Collection
 	opcount int
@@ -267,10 +266,14 @@ func (b *Bulk) Upsert(pairs ...interface{}) {
 		if selector == nil {
 			selector = bson.D{}
 		}
+
+		// Wrap plain documents in $set operator for MongoDB compatibility
+		wrappedUpdate := wrapInSetOperator(pairs[i+1])
+
 		action.docs = append(action.docs, &updateOp{
 			Collection: b.c.FullName,
 			Selector:   selector,
-			Update:     pairs[i+1],
+			Update:     wrappedUpdate,
 			Flags:      1,
 			Upsert:     true,
 		})
